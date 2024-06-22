@@ -1,12 +1,13 @@
 # docker-dbg
 
-Python package to effortlessly debug any<sup>1</sup> process running in a docker container
-
-<sup>1</sup> Only x86_64 containers running Linux are supported.  
+Python package to effortlessly debug any process running in a x86_64 Linux docker container
 
 
 ## Demo
 
+https://github.com/junron/docker-dbg/assets/26194273/b2ed4956-8007-4035-8e01-92ab52f18369
+
+Checkout the [`demo`](./demo) directory for more demos.
 
 ## Installation
 ```shell
@@ -14,6 +15,10 @@ pip install git+https://github.com/junron/docker-dbg
 ```
 
 ## Usage
+
+
+
+
 
 Docker-dbg mirrors the `pwntools` [GDB module](https://docs.pwntools.com/en/stable/gdb.html)'s `debug` and `attach`:
 
