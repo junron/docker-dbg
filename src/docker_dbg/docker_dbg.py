@@ -51,9 +51,6 @@ def setup_docker(args, container, exe=None) -> Tuple[int, str]:
         killall("gdbserver")
         killall("frpc")
     atexit.register(cleanup)
-
-    if isinstance(args, (bytes, six.text_type)):
-        args = [args]
     
     parts = args[0].split("/")
     if parts[0] != "":
@@ -133,7 +130,8 @@ class DockerProcess:
         return maps
     
     @functools.lru_cache()
-    def download_lib(self, path):
+    def fetch_lib(self, path):
+        from pwnlib.elf import ELF
         temp = tempfile.NamedTemporaryFile(delete=False)
         container_exe_name = random.randbytes(8).hex()
         container_path = f"/proc/{self.pid}/root{path}"
@@ -141,7 +139,9 @@ class DockerProcess:
         os.popen(f"docker cp '{self.container}:/{container_exe_name}' {temp.name}").read()
         exec_in_container(self.container, f"rm /{container_exe_name}")
         atexit.register(lambda: os.unlink(temp.name))
-        return temp.name
+        e = ELF(temp.name)
+        e.address = self.libs()[path]
+        return e
     
     @property
     def libc_path(self) -> str:
@@ -153,9 +153,9 @@ class DockerProcess:
     def libc(self) -> pwnlib.elf.ELF:
         from pwnlib.elf import ELF
         lib = self.libc_path
-        e = ELF(self.download_lib(lib))
-        e.address = self.libs()[self.libc_path]
-        return e
+        if not lib:
+            return lib
+        return self.fetch_lib(self.libc_path)
             
     def download_libc(self):
         path = self.libc.path
@@ -196,7 +196,10 @@ class DockerProcess:
     def brpt(self: pwnlib.tubes.process, address: int, block=False) -> pwnlib.gdb.Gdb:
         return self.breakpoint(address, block)
 
-def docker_debug(args, container, gdbscript=None, exe=None, api=False) -> process:
+def docker_debug(args, container, gdbscript=None, exe=None) -> Tuple[process, DockerProcess]:
+    if isinstance(args, (bytes, six.text_type)):
+        args = [args]
+
     gdbserver_port, exe = setup_docker(args, container, exe)
 
     gdbserver_args = ["docker", "exec", "-i", "--user", "root", container]
@@ -204,17 +207,20 @@ def docker_debug(args, container, gdbscript=None, exe=None, api=False) -> proces
     gdbserver = process(gdbserver_args + ["/gdbserver", "--no-disable-randomization", f"localhost:{gdbserver_port}", *args], level="error")
 
     gdbserver.executable = exe
-    tmp = pgdb.attach(("127.0.0.1", gdbserver_port), exe=exe, gdbscript=gdbscript, api=api)
+    _, gdb = pgdb.attach(("127.0.0.1", gdbserver_port), exe=exe, gdbscript=gdbscript, api=True)
+    gdbserver.gdb = gdb
+    dp = DockerProcess()
+    dp.gdb = gdb
+    dp.executable = exe
+    dp.container = container
 
-    if api:
-        _, gdb = tmp
-        gdbserver.gdb = gdb
-    garbage = gdbserver.recvline(timeout=1)
+    gdbserver.recvuntil(b"pid = ")
+    dp.pid = int(gdbserver.recvline())
 
     # Some versions of gdbserver output an additional message
     garbage2 = gdbserver.recvline_startswith(b"Remote debugging from host ", timeout=2)
 
-    return gdbserver
+    return gdbserver, dp
 
 
 def docker_attach(proc, container, gdbscript=None) -> DockerProcess:
@@ -226,7 +232,7 @@ def docker_attach(proc, container, gdbscript=None) -> DockerProcess:
     exe_path = f"/proc/{pid}/exe"
     container_exe_name = random.randbytes(8).hex()
     os.popen(f"docker exec --user root '{container}' cp {exe_path} /{container_exe_name}").read()
-    gdbserver_port, exe = setup_docker(f"/{container_exe_name}", container)
+    gdbserver_port, exe = setup_docker([f"/{container_exe_name}"], container)
     os.popen(f"docker exec --user root '{container}' rm /{container_exe_name}")
 
     gdbserver_args = ["docker", "exec", "-i", "--user", "root", container]
